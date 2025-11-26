@@ -3,6 +3,9 @@ from tkinter import ttk, messagebox
 from pathlib import Path
 from typing import Dict, Tuple, List
 
+# Run the line below in the terminal to launch the GUI: 
+# py(or python) combined_ui_prediction_gui.py
+
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
@@ -36,6 +39,10 @@ TOP_FEATURES = [
 CALL_THRESHOLD = 0.50
 FULL_THRESHOLD = 0.20  # matches the interactive threshold used in the notebook
 Q2_THRESHOLD = 0.50    # default logistic cutoff from Question 2
+# Weighted blend (call-count is weakest signal, term_deposit is strongest)
+CALL_WEIGHT = 0.15
+FULL_WEIGHT = 0.50
+Q2_WEIGHT = 0.35
 
 
 def locate_data_file() -> Path:
@@ -163,7 +170,7 @@ def build_gui():
 
     root = tk.Tk()
     root.title('Term Deposit Prediction (UI + Call Model)')
-    root.geometry('820x1050')
+    root.geometry('820x900')
 
     # Basic styling
     style = ttk.Style()
@@ -182,7 +189,7 @@ def build_gui():
     ttk.Label(main_frame, text='Term Deposit Predictor', style='Title.TLabel').grid(row=0, column=0, sticky='w')
     ttk.Label(
         main_frame,
-        text='Combine call-count model (Question 1), term_deposit feature model, and full-feature Question 2 model.',
+        text='Combine call-count model (Question 1), term_deposit feature model, and a full-feature Question 2 model summary.',
     ).grid(row=1, column=0, sticky='w', pady=(0, 12))
 
     # Call count input
@@ -216,33 +223,27 @@ def build_gui():
             widgets[feature] = combo
         else:
             var = tk.StringVar(value=str(feature_defaults[feature]))
+            # Add hint for typical numeric range based on dataset quantiles
+            hint = ''
+            numeric_hints = {
+                'emp.var.rate': 'typical 1.10 (1% -3.40, 99% 1.40)',
+                'cons.price.idx': 'typical 93.75 (1% 92.20, 99% 94.47)',
+                'euribor3m': 'typical 4.86 (1% 0.66, 99% 4.97)',
+                'nr.employed': 'typical 5191 (1% 4963, 99% 5228)',
+                'pdays': '0 if never contacted; 999 = not previously contacted',
+                'previous': 'usually 0 (99% <=2)',
+                'cons.conf.idx': 'typical -41.8 (1% -49.5, 99% -26.9)',
+            }
+            hint = numeric_hints.get(feature, '')
             entry = ttk.Entry(features_frame, textvariable=var, width=18)
             entry.grid(row=idx, column=1, sticky='w', pady=3)
             widgets[feature] = entry
-
-    # Question 2 full-feature inputs
-    q2_frame = ttk.LabelFrame(main_frame, text='Question 2 model (full features, no duration)', style='Section.TLabelframe')
-    q2_frame.grid(row=4, column=0, sticky='ew', pady=(0, 12))
-    q2_frame.columnconfigure(1, weight=1)
-
-    q2_widgets: Dict[str, tk.Widget] = {}
-    for idx, feature in enumerate(q2_features):
-        ttk.Label(q2_frame, text=feature).grid(row=idx, column=0, sticky='w', padx=(0, 8), pady=3)
-        if q2_types[feature] == 'categorical':
-            var = tk.StringVar(value=str(q2_defaults[feature]))
-            combo = ttk.Combobox(q2_frame, textvariable=var, values=q2_options[feature], width=24)
-            combo.state(['readonly'])
-            combo.grid(row=idx, column=1, sticky='ew', pady=3)
-            q2_widgets[feature] = combo
-        else:
-            var = tk.StringVar(value=str(q2_defaults[feature]))
-            entry = ttk.Entry(q2_frame, textvariable=var, width=18)
-            entry.grid(row=idx, column=1, sticky='w', pady=3)
-            q2_widgets[feature] = entry
+            if hint:
+                ttk.Label(features_frame, text=hint, foreground='#555').grid(row=idx, column=2, sticky='w', padx=(8, 0))
 
     # Results display
     result_frame = ttk.LabelFrame(main_frame, text='Results', style='Section.TLabelframe')
-    result_frame.grid(row=6, column=0, sticky='ew', pady=(6, 0))
+    result_frame.grid(row=5, column=0, sticky='ew', pady=(6, 0))
     result_text = tk.StringVar(value='Fill inputs and click Predict')
     result_label = ttk.Label(result_frame, textvariable=result_text, justify='left', style='Result.TLabel')
     result_label.pack(anchor='w', fill='x')
@@ -279,39 +280,38 @@ def build_gui():
         full_input = pd.DataFrame([feature_values])
         full_prob = float(full_model.predict_proba(full_input[TOP_FEATURES])[0, 1])
 
-        q2_values: Dict[str, object] = {}
-        for name in q2_features:
-            widget = q2_widgets[name]
-            if q2_types[name] == 'categorical':
-                q2_values[name] = widget.get()
-            else:
-                raw = widget.get().strip()
-                if raw == '':
-                    raw = q2_defaults[name]
-                try:
-                    q2_values[name] = float(raw)
-                except ValueError:
-                    messagebox.showerror('Input error', f'{name} must be numeric.')
-                    return
+        # Build Q2 input using defaults, override with term_deposit inputs where available, and campaign from call input.
+        q2_values: Dict[str, object] = dict(q2_defaults)
+        for name, val in feature_values.items():
+            if name in q2_values:
+                q2_values[name] = val
+        if 'campaign' in q2_values:
+            q2_values['campaign'] = call_count
 
         q2_input = pd.DataFrame([q2_values])
         q2_prob = float(q2_model.predict_proba(q2_input[q2_features])[0, 1])
 
-        combined_score = 0.4 * call_prob + 0.6 * full_prob
+        combined_score = (
+            CALL_WEIGHT * call_prob
+            + FULL_WEIGHT * full_prob
+            + Q2_WEIGHT * q2_prob
+        )
         call_decision = 'yes' if call_prob >= CALL_THRESHOLD else 'no'
         full_decision = 'yes' if full_prob >= FULL_THRESHOLD else 'no'
         q2_decision = 'yes' if q2_prob >= Q2_THRESHOLD else 'no'
+        recommendation = 'Recommend calling this client.' if combined_score >= FULL_THRESHOLD else 'Do not prioritize calling.'
 
         result_lines = [
             f'Call-count only: P(yes)={call_prob:.3f} | thr {CALL_THRESHOLD:.2f} => {call_decision}',
             f'Full-feature:    P(yes)={full_prob:.3f} | thr {FULL_THRESHOLD:.2f} => {full_decision}',
-            f'Question2 model: P(yes)={q2_prob:.3f} | thr {Q2_THRESHOLD:.2f} => {q2_decision}',
-            f'Combined 40/60:  {combined_score:.3f}',
+            f'Question2 model: P(yes)={q2_prob:.3f} | thr {Q2_THRESHOLD:.2f} => {q2_decision} (uses inputs + defaults)',
+            f'Combined (wts call {CALL_WEIGHT:.2f}, term_deposit {FULL_WEIGHT:.2f}, Q2 {Q2_WEIGHT:.2f}): {combined_score:.3f}',
+            f'Recommendation:  {recommendation}',
         ]
         result_text.set('\n'.join(result_lines))
 
     btn_frame = ttk.Frame(main_frame)
-    btn_frame.grid(row=5, column=0, sticky='ew', pady=8)
+    btn_frame.grid(row=4, column=0, sticky='ew', pady=8)
     btn_frame.columnconfigure(0, weight=1)
     ttk.Button(btn_frame, text='Predict', command=predict).grid(row=0, column=0, sticky='w')
     ttk.Button(btn_frame, text='Quit', command=root.destroy).grid(row=0, column=1, sticky='e')
