@@ -1,9 +1,10 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import filedialog, ttk, messagebox
 from pathlib import Path
 from typing import Dict, Tuple, List
 
 import pandas as pd
+import shutil
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from sklearn.compose import ColumnTransformer
@@ -16,6 +17,11 @@ DATA_PATHS = [
     Path('Data/bank-additional-full.csv'),
     Path('bank-additional-full.csv'),
     Path('ITEC3040-Final-Project/Data/bank-additional-full.csv'),
+]
+TEMPLATE_PATHS = [
+    Path('USER_INPUT_TEMPLATE.xlsx'),
+    Path('user_input_entry_guide.xlsx'),
+    Path('user_input_template.xlsx'),
 ]
 TOP_FEATURES = [
     'euribor3m',
@@ -58,6 +64,13 @@ def locate_data_file() -> Path:
         if path.exists():
             return path
     raise FileNotFoundError('bank-additional-full.csv not found in expected locations.')
+
+
+def locate_template_file() -> Path:
+    for path in TEMPLATE_PATHS:
+        if path.exists():
+            return path
+    raise FileNotFoundError('Template file not found (looked for user_input_entry_guide_reset.xlsx/user_input_entry_guide.xlsx/user_input_template.xlsx).')
 
 
 def load_dataset() -> pd.DataFrame:
@@ -227,6 +240,9 @@ def build_gui():
     style.configure('Main.TFrame', background=bg)
     style.configure('Accent.TButton', padding=(12, 8), font=('Segoe UI', 10, 'bold'), foreground='#ffffff', background=accent)
     style.map('Accent.TButton', background=[('active', '#095a82')])
+    download_green = '#2e8b57'
+    style.configure('Download.TButton', padding=(12, 8), font=('Segoe UI', 10, 'bold'), foreground='#ffffff', background=download_green)
+    style.map('Download.TButton', background=[('active', '#256b45')])
 
     main_frame = ttk.Frame(root, padding=18, style='Main.TFrame')
     main_frame.pack(fill='both', expand=True)
@@ -448,8 +464,193 @@ def build_gui():
     btn_frame = ttk.Frame(main_frame)
     btn_frame.grid(row=4, column=0, sticky='ew', pady=8)
     btn_frame.columnconfigure(0, weight=1)
+    btn_frame.columnconfigure(1, weight=0)
+    btn_frame.columnconfigure(2, weight=0)
+    btn_frame.columnconfigure(3, weight=0)
     ttk.Button(btn_frame, text='Predict', command=predict, style='Accent.TButton').grid(row=0, column=0, sticky='w')
-    ttk.Button(btn_frame, text='Quit', command=root.destroy).grid(row=0, column=1, sticky='e')
+    ttk.Button(btn_frame, text='Download Template', command=lambda: download_template(), style='Download.TButton').grid(row=0, column=1, padx=(8, 0))
+    ttk.Button(btn_frame, text='Batch Predict (CSV)', command=lambda: batch_predict(), style='Accent.TButton').grid(row=0, column=2, padx=(8, 0))
+    ttk.Button(btn_frame, text='Quit', command=root.destroy).grid(row=0, column=3, sticky='e')
+
+    def download_template() -> None:
+        try:
+            template_path = locate_template_file()
+        except FileNotFoundError as exc:
+            messagebox.showerror('Template missing', str(exc))
+            return
+        dest = filedialog.asksaveasfilename(
+            title='Save input template',
+            defaultextension='.xlsx',
+            filetypes=[('Excel Workbook', '*.xlsx'), ('All Files', '*.*')],
+            initialfile=template_path.name,
+        )
+        if not dest:
+            return
+        try:
+            shutil.copyfile(template_path, dest)
+            messagebox.showinfo('Template saved', f'Template saved to:\n{dest}')
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror('Save error', f'Could not save template:\n{exc}')
+
+    def batch_predict() -> None:
+        src = filedialog.askopenfilename(
+            title='Select input CSV',
+            filetypes=[('CSV files', '*.csv'), ('All Files', '*.*')],
+        )
+        if not src:
+            return
+        try:
+            input_df = pd.read_csv(src)
+        except Exception as exc:
+            messagebox.showerror('Read error', f'Could not read CSV:\n{exc}')
+            return
+
+        if input_df.empty:
+            messagebox.showerror('Input error', 'The selected CSV is empty.')
+            return
+
+        results: Dict[str, List[object]] = {
+            'call_prob': [],
+            'full_prob': [],
+            'q2_prob': [],
+            'combined_score': [],
+            'recommended': [],
+        }
+
+        def safe_get(row: pd.Series, name: str, default: object) -> object:
+            if name in row and not pd.isna(row[name]):
+                return row[name]
+            return default
+
+        allowed_categories: Dict[str, set] = {
+            'job': {
+                'admin.', 'blue-collar', 'entrepreneur', 'housemaid', 'management',
+                'retired', 'self-employed', 'services', 'student', 'technician', 'unemployed', 'unknown',
+            },
+            'marital': {'divorced', 'married', 'single', 'unknown'},
+            'education': {
+                'basic.4y', 'basic.6y', 'basic.9y', 'high.school', 'illiterate',
+                'professional.course', 'university.degree', 'unknown',
+            },
+            'default': {'no', 'yes', 'unknown'},
+            'housing': {'no', 'yes', 'unknown'},
+            'loan': {'no', 'yes', 'unknown'},
+            'contact': {'cellular', 'telephone'},
+            'month': {'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'},
+            'day_of_week': {'mon', 'tue', 'wed', 'thu', 'fri'},
+            'poutcome': {'failure', 'nonexistent', 'success', 'unknown'},
+        }
+        numeric_ranges: Dict[str, Tuple[float, float]] = {
+            'age': (18, 100),
+            'campaign': (0, 100),
+            'pdays': (0, 999),
+            'previous': (0, 100),
+            'emp.var.rate': (-5, 5),
+            'cons.price.idx': (80, 110),
+            'cons.conf.idx': (-60, 0),
+            'euribor3m': (-5, 10),
+            'nr.employed': (4000, 7000),
+        }
+        error_cells: List[str] = []
+
+        def add_error(row_num: int, col_name: str, value: object, msg: str) -> None:
+            error_cells.append(f'Row {row_num}, column {col_name}: {msg} (found: {value})')
+
+        # Validate all rows first
+        for idx, row in input_df.iterrows():
+            display_row = idx + 2  # account for header row in CSV
+            for cat_col, allowed_set in allowed_categories.items():
+                if cat_col in row and not pd.isna(row[cat_col]):
+                    val_str = str(row[cat_col]).strip()
+                    if val_str not in allowed_set:
+                        add_error(display_row, cat_col, val_str, 'not in allowed list')
+            for num_col, (min_v, max_v) in numeric_ranges.items():
+                if num_col in row and not pd.isna(row[num_col]):
+                    try:
+                        num_val = float(row[num_col])
+                    except Exception:
+                        add_error(display_row, num_col, row[num_col], 'must be numeric')
+                        continue
+                    if num_val < min_v or num_val > max_v:
+                        add_error(display_row, num_col, num_val, f'must be between {min_v} and {max_v}')
+
+        if error_cells:
+            messagebox.showerror(
+                'Input validation errors',
+                'Found invalid values in the CSV, Please make sure it follows the format and values found in the template:\n\n' + '\n'.join(error_cells[:50]) + ('\n... (more errors)' if len(error_cells) > 50 else '')
+            )
+            return
+
+        dest = filedialog.asksaveasfilename(
+            title='Save results CSV',
+            defaultextension='.csv',
+            filetypes=[('CSV files', '*.csv'), ('All Files', '*.*')],
+            initialfile='batch_predictions.csv',
+        )
+        if not dest:
+            return
+
+        for _, row in input_df.iterrows():
+            # Call-count
+            raw_campaign = safe_get(row, 'campaign', default_calls)
+            try:
+                call_count = int(float(raw_campaign))
+                if call_count < 0:
+                    raise ValueError
+            except Exception:
+                call_count = default_calls
+
+            # Top features
+            feature_values: Dict[str, object] = {}
+            for name in TOP_FEATURES:
+                val = safe_get(row, name, feature_defaults[name])
+                if feature_types[name] == 'categorical':
+                    feature_values[name] = str(val)
+                else:
+                    try:
+                        feature_values[name] = float(val)
+                    except Exception:
+                        feature_values[name] = float(feature_defaults[name])
+
+            call_input = pd.DataFrame({'campaign': [call_count]})
+            call_prob = float(call_model.predict_proba(call_input)[0, 1])
+
+            full_input = pd.DataFrame([feature_values])
+            full_prob = float(full_model.predict_proba(full_input[TOP_FEATURES])[0, 1])
+
+            # Q2 input
+            q2_values: Dict[str, object] = dict(q2_defaults)
+            for name, val in row.items():
+                if name in q2_values and not pd.isna(val):
+                    q2_values[name] = val
+            q2_values['campaign'] = call_count
+            q2_input = pd.DataFrame([q2_values])
+            q2_prob = float(q2_model.predict_proba(q2_input[q2_features])[0, 1])
+
+            combined_score = (
+                CALL_WEIGHT * call_prob
+                + FULL_WEIGHT * full_prob
+                + Q2_WEIGHT * q2_prob
+            )
+            recommended = 'yes' if combined_score >= FULL_THRESHOLD else 'no'
+
+            results['call_prob'].append(call_prob)
+            results['full_prob'].append(full_prob)
+            results['q2_prob'].append(q2_prob)
+            results['combined_score'].append(combined_score)
+            results['recommended'].append(recommended)
+
+        output_df = input_df.copy()
+        # Put recommendation in column A, then append probabilities/scores.
+        output_df.insert(0, 'recommended', results['recommended'])
+        for key in ('call_prob', 'full_prob', 'q2_prob', 'combined_score'):
+            output_df[key] = results[key]
+
+        try:
+            output_df.to_csv(dest, index=False)
+            messagebox.showinfo('Batch complete', f'Results saved to:\n{dest}')
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror('Save error', f'Could not save results:\n{exc}')
 
     root.mainloop()
 
