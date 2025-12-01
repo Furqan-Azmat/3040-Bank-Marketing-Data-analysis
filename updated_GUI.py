@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Dict, Tuple, List
 
 import pandas as pd
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
@@ -25,7 +27,7 @@ TOP_FEATURES = [
     'cons.conf.idx',
 ]
 DISPLAY_NAMES = {
-    'euribor3m': 'Euro Interbank Offered Rate',
+    'euribor3m': 'Euro Interbank 3 month Offered Rate',
     'age': 'Age',
     'campaign': 'Calls this campaign',
     'nr.employed': 'Employment level (nr.employed)',
@@ -34,16 +36,16 @@ DISPLAY_NAMES = {
     'cons.conf.idx': 'Consumer confidence index',
 }
 DISPLAY_DESCRIPTIONS = {
-    'euribor3m': 'Interest rate in Europe for 3-month loans between banks. Higher can mean a stronger economy.',
+    'euribor3m': 'Interest rate in Europe for 3-month loans between banks',
     'age': 'Customer age in years.',
     'campaign': 'How many times this customer was contacted in the current campaign.',
-    'nr.employed': 'Overall employment level in the economy (from the dataset). Higher often means better job market.',
+    'nr.employed': 'Overall employment level in the economy.',
     'pdays': 'Days since this customer was last contacted; 999 means they were not contacted before.',
     'emp.var.rate': 'Recent change in employment levels; shows whether the job market is growing or shrinking.',
-    'cons.conf.idx': 'Consumer confidence; higher means people feel more positive about the economy.',
+    'cons.conf.idx': 'Consumer confidence; How people feel about the economy.',
 }
 
-CALL_THRESHOLD = 0.50
+CALL_THRESHOLD = 0.10
 FULL_THRESHOLD = 0.40
 Q2_THRESHOLD = 0.50
 CALL_WEIGHT = 0.15
@@ -207,7 +209,7 @@ def build_gui():
 
     root = tk.Tk()
     root.title('Term Deposit Prediction')
-    root.geometry('840x900')
+    root.geometry('1100x900')
 
     bg = '#f5f7fa'
     card_bg = '#ffffff'
@@ -233,7 +235,7 @@ def build_gui():
     ttk.Label(main_frame, text='Term Deposit Predictor', style='Title.TLabel').grid(row=0, column=0, sticky='w')
     ttk.Label(
         main_frame,
-        text='Predict using call-count (Q1), Q3 top-7 logistic, and full-feature logistic (Q2). Defaults shown below are medians/modes.',
+        text='Predict using call-count (Q1), Q3 top-7 features, and Q2 high/low groups. Defaults shown below are medians/modes.',
         style='Body.TLabel',
     ).grid(row=1, column=0, sticky='w', pady=(0, 10))
 
@@ -251,7 +253,7 @@ def build_gui():
     )
     calls_spin.grid(row=0, column=1, sticky='w', pady=4, padx=(8, 0))
 
-    features_frame = ttk.LabelFrame(main_frame, text='Q3 top-7 feature model (logistic)', style='Section.TLabelframe')
+    features_frame = ttk.LabelFrame(main_frame, text='Q3 top-7 feature model', style='Section.TLabelframe')
     features_frame.grid(row=3, column=0, sticky='ew', pady=(0, 12))
     features_frame.columnconfigure(1, weight=1)
     ttk.Label(
@@ -338,9 +340,24 @@ def build_gui():
 
     result_frame = ttk.LabelFrame(main_frame, text='Results', style='Section.TLabelframe')
     result_frame.grid(row=5, column=0, sticky='ew', pady=(6, 0))
+    result_container = ttk.Frame(result_frame)
+    result_container.grid(row=0, column=0, sticky='nsew')
+    result_container.columnconfigure(0, weight=3)
+    result_container.columnconfigure(1, weight=2)
     result_text = tk.StringVar(value='Fill inputs and click Predict')
-    result_label = ttk.Label(result_frame, textvariable=result_text, justify='left', style='Result.TLabel')
-    result_label.pack(anchor='w', fill='x')
+    result_label = ttk.Label(
+        result_container,
+        textvariable=result_text,
+        justify='left',
+        style='Result.TLabel',
+        padding=(0, 0, 8, 0),
+        wraplength=420,
+    )
+    result_label.grid(row=0, column=0, sticky='nw')
+    chart_frame = ttk.Frame(result_container)
+    chart_frame.grid(row=0, column=1, sticky='ne', padx=(12, 0))
+    result_frame.columnconfigure(0, weight=1)
+    chart_holder: Dict[str, object] = {'canvas': None}
 
     def predict():
         try:
@@ -394,10 +411,34 @@ def build_gui():
         q2_label = 'high-response' if q2_prob >= Q2_THRESHOLD else 'low-response'
         recommendation = 'Recommend calling this client.' if combined_score >= FULL_THRESHOLD else 'Do not prioritize calling.'
 
+        # Visualization: bar chart of probabilities
+        labels = ['Calls', 'Top 7', 'High/Low', 'Combined']
+        values = [call_prob, full_prob, q2_prob, combined_score]
+        colors = ['#4c9be8', '#7dcfb6', '#f5a623', '#0b6fa4']
+        fig = Figure(figsize=(5.5, 2.4), dpi=100)
+        ax = fig.add_subplot(111)
+        bars = ax.bar(labels, values, color=colors)
+        ax.axhline(FULL_THRESHOLD, color='#888', linestyle='--', linewidth=1, label=f'Threshold {FULL_THRESHOLD:.2f}')
+        ax.set_ylim(0, 1.05)
+        ax.set_ylabel('P(yes)')
+        ax.set_title('Predicted probabilities')
+        ax.legend(loc='upper right')
+        for bar, val in zip(bars, values):
+            ax.text(bar.get_x() + bar.get_width() / 2, val + 0.02, f'{val:.2f}', ha='center', va='bottom', fontsize=9)
+
+        if chart_holder['canvas'] is not None:
+            chart_holder['canvas'].get_tk_widget().destroy()
+        canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+        canvas.draw()
+        canvas_widget = canvas.get_tk_widget()
+        canvas_widget.pack(anchor='ne', pady=(0, 0))
+        chart_holder['canvas'] = canvas
+        root.update_idletasks()
+
         result_lines = [
-            f'Call-count only (Q1): P(yes)={call_prob:.3f} | thr {CALL_THRESHOLD:.2f} => {call_decision}',
-            f'Top-feature:        P(yes)={full_prob:.3f} | thr {FULL_THRESHOLD:.2f} => {full_decision}',
-            f'Question2 model:    P(yes)={q2_prob:.3f} | thr {Q2_THRESHOLD:.2f} => {q2_decision} ({q2_label})',
+            f'Call-count only:   P(yes)={call_prob:.3f} | thr {CALL_THRESHOLD:.2f} => {call_decision}',
+            f'Top-features:      P(yes)={full_prob:.3f} | thr {FULL_THRESHOLD:.2f} => {full_decision}',
+            f'High or Low group: P(yes)={q2_prob:.3f} | thr {Q2_THRESHOLD:.2f} => {q2_decision} ({q2_label})',
             f'Combined (wts call {CALL_WEIGHT:.2f}, top {FULL_WEIGHT:.2f}, Q2 {Q2_WEIGHT:.2f}): {combined_score:.3f}',
             f'Combined meets threshold? {"yes" if combined_score >= FULL_THRESHOLD else "no"} (thr {FULL_THRESHOLD:.2f})',
             f'Recommendation:  {recommendation}',
