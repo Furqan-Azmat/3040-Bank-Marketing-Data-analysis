@@ -1,23 +1,14 @@
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from pathlib import Path
-from typing import Dict, Tuple, List
+from typing import Dict, List
 
+import joblib
 import pandas as pd
 import shutil
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-from sklearn.compose import ColumnTransformer
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-DATA_PATHS = [
-    Path('Data/bank-additional-full.csv'),
-    Path('bank-additional-full.csv'),
-    Path('ITEC3040-Final-Project/Data/bank-additional-full.csv'),
-]
 TEMPLATE_PATHS = [
     Path('USER_INPUT_TEMPLATE.xlsx'),
     Path('user_input_entry_guide.xlsx'),
@@ -59,121 +50,11 @@ FULL_WEIGHT = 0.50
 Q2_WEIGHT = 0.35
 
 
-def locate_data_file() -> Path:
-    for path in DATA_PATHS:
-        if path.exists():
-            return path
-    raise FileNotFoundError('bank-additional-full.csv not found in expected locations.')
-
-
 def locate_template_file() -> Path:
     for path in TEMPLATE_PATHS:
         if path.exists():
             return path
     raise FileNotFoundError('Template file not found (looked for user_input_entry_guide_reset.xlsx/user_input_entry_guide.xlsx/user_input_template.xlsx).')
-
-
-def load_dataset() -> pd.DataFrame:
-    path = locate_data_file()
-    df = pd.read_csv(path, sep=';')
-    if 'duration' in df.columns:
-        df = df.drop(columns=['duration'])
-    return df
-
-
-def train_call_model(df: pd.DataFrame) -> Tuple[LogisticRegression, int, int]:
-    target = (df['y'] == 'yes').astype(int)
-    X = df[['campaign']]
-    X_train, _, y_train, _ = train_test_split(
-        X, target, test_size=0.2, stratify=target, random_state=42
-    )
-    model = LogisticRegression()
-    model.fit(X_train, y_train)
-    default_calls = int(X['campaign'].median())
-    max_calls = int(X['campaign'].max())
-    return model, default_calls, max_calls
-
-
-def build_feature_metadata(df: pd.DataFrame, feature_list: List[str]) -> Tuple[Dict[str, object], Dict[str, str], Dict[str, list]]:
-    cat_cols = df.select_dtypes(include=['object']).columns.tolist()
-    num_cols = [c for c in df.columns if c not in cat_cols]
-
-    feature_defaults: Dict[str, object] = {}
-    feature_types: Dict[str, str] = {}
-    feature_options: Dict[str, list] = {}
-    for col in feature_list:
-        if col in cat_cols:
-            feature_defaults[col] = df[col].mode(dropna=True)[0]
-            feature_types[col] = 'categorical'
-            feature_options[col] = sorted(df[col].dropna().unique().tolist())
-        else:
-            feature_defaults[col] = float(df[col].median())
-            feature_types[col] = 'numeric'
-            feature_options[col] = []
-
-    return feature_defaults, feature_types, feature_options
-
-
-def train_feature_model(df: pd.DataFrame, feature_list: List[str]) -> Tuple[Pipeline, Dict[str, object], Dict[str, str], Dict[str, list]]:
-    y = (df['y'] == 'yes').astype(int)
-    X = df.drop(columns=['y'])
-
-    feature_defaults, feature_types, feature_options = build_feature_metadata(X, feature_list)
-    use_cat = [c for c in feature_list if c in X.select_dtypes(include=['object']).columns]
-    use_num = [c for c in feature_list if c not in use_cat]
-
-    preprocessor = ColumnTransformer(
-        [
-            ('cat', OneHotEncoder(handle_unknown='ignore'), use_cat),
-            ('num', Pipeline([('scaler', StandardScaler())]), use_num),
-        ],
-        remainder='drop',
-    )
-
-    X_train, _, y_train, _ = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=42
-    )
-
-    model = Pipeline(
-        [
-            ('preprocess', preprocessor),
-            ('model', LogisticRegression(max_iter=300, class_weight='balanced')),
-        ]
-    )
-    model.fit(X_train[feature_list], y_train)
-
-    return model, feature_defaults, feature_types, feature_options
-
-
-def train_q2_model(df: pd.DataFrame) -> Tuple[Pipeline, Dict[str, object], Dict[str, str], Dict[str, list], List[str]]:
-    y = (df['y'] == 'yes').astype(int)
-    X = df.drop(columns=['y'])
-    feature_list = list(X.columns)
-
-    cat_cols = X.select_dtypes(include=['object']).columns.tolist()
-    num_cols = [c for c in X.columns if c not in cat_cols]
-
-    feature_defaults, feature_types, feature_options = build_feature_metadata(X, feature_list)
-
-    preprocess = ColumnTransformer(
-        transformers=[
-            ('categorical', OneHotEncoder(handle_unknown='ignore'), cat_cols),
-            ('numeric', 'passthrough', num_cols),
-        ],
-        remainder='drop',
-    )
-
-    X_train, _, y_train, _ = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=42
-    )
-
-    clf = Pipeline(steps=[
-        ('preprocess', preprocess),
-        ('model', LogisticRegression(max_iter=500, class_weight='balanced', n_jobs=-1)),
-    ])
-    clf.fit(X_train, y_train)
-
-    return clf, feature_defaults, feature_types, feature_options, feature_list
 
 
 def attach_tooltip(widget: tk.Widget, text: str) -> None:
@@ -209,16 +90,45 @@ def attach_tooltip(widget: tk.Widget, text: str) -> None:
     widget.bind('<Leave>', leave)
 
 
+def load_artifact(path: Path, expected_keys: List[str]) -> Dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(f'Model artifact missing: {path}')
+    obj = joblib.load(path)
+    if not isinstance(obj, dict):
+        raise ValueError(f'Artifact {path} is not a dict payload.')
+    for key in expected_keys:
+        if key not in obj:
+            raise KeyError(f'Artifact {path} missing key: {key}')
+    return obj
+
+
 def build_gui():
     try:
-        df = load_dataset()
-    except FileNotFoundError as exc:
-        messagebox.showerror('Error', str(exc))
+        models_dir = Path(__file__).resolve().parent / 'Trained_models'
+        call_art = load_artifact(models_dir / 'call_model.joblib', ['model', 'defaults'])
+        top7_art = load_artifact(models_dir / 'top7_model.joblib', ['model', 'feature_list', 'defaults', 'types', 'options'])
+        q2_art = load_artifact(models_dir / 'q2_model.joblib', ['model', 'feature_list', 'defaults', 'types', 'options'])
+    except Exception as exc:  # noqa: BLE001
+        messagebox.showerror('Model files missing', f'Could not load pre-trained artifacts:\n{exc}')
         return
 
-    call_model, default_calls, max_calls = train_call_model(df)
-    full_model, feature_defaults, feature_types, feature_options = train_feature_model(df, TOP_FEATURES)
-    q2_model, q2_defaults, q2_types, q2_options, q2_features = train_q2_model(df)
+    call_model = call_art['model']
+    default_calls = int(call_art['defaults'].get('calls_default', 0))
+    max_calls = int(call_art['defaults'].get('calls_max', 50))
+
+    full_model = top7_art['model']
+    feature_defaults = top7_art['defaults']
+    feature_types = top7_art['types']
+    feature_options = top7_art['options']
+
+    q2_model = q2_art['model']
+    q2_defaults = q2_art['defaults']
+    q2_types = q2_art['types']
+    q2_options = q2_art['options']
+    q2_features = q2_art['feature_list']
+
+    q2_defaults_loaded = dict(q2_defaults)
+    initial_calls = default_calls
 
     root = tk.Tk()
     root.title('Term Deposit Prediction')
@@ -259,7 +169,7 @@ def build_gui():
     calls_frame.grid(row=2, column=0, sticky='ew', pady=(0, 12))
     calls_frame.columnconfigure(1, weight=1)
     ttk.Label(calls_frame, text='Number of calls (campaign):').grid(row=0, column=0, sticky='w')
-    calls_var = tk.IntVar(value=default_calls)
+    calls_var = tk.IntVar(value=initial_calls)
     calls_spin = ttk.Spinbox(
         calls_frame,
         from_=0,
@@ -406,7 +316,7 @@ def build_gui():
         full_prob = float(full_model.predict_proba(full_input[TOP_FEATURES])[0, 1])
 
         # Build Q2 input using defaults, override with term_deposit inputs where available, and campaign from call input.
-        q2_values: Dict[str, object] = dict(q2_defaults)
+        q2_values: Dict[str, object] = dict(q2_defaults_loaded)
         for name, val in feature_values.items():
             if name in q2_values:
                 q2_values[name] = val
@@ -592,13 +502,13 @@ def build_gui():
 
         for _, row in input_df.iterrows():
             # Call-count
-            raw_campaign = safe_get(row, 'campaign', default_calls)
+            raw_campaign = safe_get(row, 'campaign', initial_calls)
             try:
                 call_count = int(float(raw_campaign))
                 if call_count < 0:
                     raise ValueError
             except Exception:
-                call_count = default_calls
+                call_count = initial_calls
 
             # Top features
             feature_values: Dict[str, object] = {}
@@ -619,7 +529,7 @@ def build_gui():
             full_prob = float(full_model.predict_proba(full_input[TOP_FEATURES])[0, 1])
 
             # Q2 input
-            q2_values: Dict[str, object] = dict(q2_defaults)
+            q2_values: Dict[str, object] = dict(q2_defaults_loaded)
             for name, val in row.items():
                 if name in q2_values and not pd.isna(val):
                     q2_values[name] = val
