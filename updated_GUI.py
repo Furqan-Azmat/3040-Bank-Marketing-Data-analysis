@@ -1,3 +1,5 @@
+"""Tkinter-based GUI for term-deposit predictions using pre-trained joblib models."""
+
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from pathlib import Path
@@ -14,6 +16,7 @@ TEMPLATE_PATHS = [
     Path('user_input_entry_guide.xlsx'),
     Path('user_input_template.xlsx'),
 ]
+# User-facing feature metadata (labels and tooltips) for the GUI inputs
 TOP_FEATURES = [
     'euribor3m',
     'age',
@@ -42,15 +45,16 @@ DISPLAY_DESCRIPTIONS = {
     'cons.conf.idx': 'Consumer confidence; How people feel about the economy.',
 }
 
-CALL_THRESHOLD = 0.10
-FULL_THRESHOLD = 0.40
-Q2_THRESHOLD = 0.50
-CALL_WEIGHT = 0.15
-FULL_WEIGHT = 0.50
-Q2_WEIGHT = 0.35
+CALL_THRESHOLD = 0.10  # Q1 call-only decision threshold
+FULL_THRESHOLD = 0.40  # Combined and top-7 decision threshold
+Q2_THRESHOLD = 0.50    # Q2 high/low group threshold
+CALL_WEIGHT = 0.15     # Weight for call-only probability
+FULL_WEIGHT = 0.50     # Weight for top-7 probability
+Q2_WEIGHT = 0.35       # Weight for Q2 probability
 
 
 def locate_template_file() -> Path:
+    """Return the first existing template path or raise."""
     for path in TEMPLATE_PATHS:
         if path.exists():
             return path
@@ -61,6 +65,7 @@ def attach_tooltip(widget: tk.Widget, text: str) -> None:
     """Simple hover tooltip for feature info."""
     if not text:
         return
+    # Build the tooltip window
     tooltip = tk.Toplevel(widget)
     tooltip.withdraw()
     tooltip.overrideredirect(True)
@@ -78,12 +83,14 @@ def attach_tooltip(widget: tk.Widget, text: str) -> None:
     lbl.pack()
 
     def enter(_event: object) -> None:
+        # Position tooltip near the widget on hover
         x = widget.winfo_rootx() + 20
         y = widget.winfo_rooty() + 20
         tooltip.geometry(f'+{x}+{y}')
         tooltip.deiconify()
 
     def leave(_event: object) -> None:
+        # Hide tooltip when cursor leaves
         tooltip.withdraw()
 
     widget.bind('<Enter>', enter)
@@ -91,6 +98,7 @@ def attach_tooltip(widget: tk.Widget, text: str) -> None:
 
 
 def load_artifact(path: Path, expected_keys: List[str]) -> Dict[str, object]:
+    """Load a saved model/metadata artifact and verify required keys are present."""
     if not path.exists():
         raise FileNotFoundError(f'Model artifact missing: {path}')
     obj = joblib.load(path)
@@ -103,6 +111,8 @@ def load_artifact(path: Path, expected_keys: List[str]) -> Dict[str, object]:
 
 
 def build_gui():
+    """Initialize the Tkinter GUI and wire model inference for single/batch predictions."""
+    # Load pre-trained artifacts (call model, top-7 model, and full Q2 model).
     try:
         models_dir = Path(__file__).resolve().parent / 'Trained_models'
         call_art = load_artifact(models_dir / 'call_model.joblib', ['model', 'defaults'])
@@ -127,16 +137,18 @@ def build_gui():
     q2_options = q2_art['options']
     q2_features = q2_art['feature_list']
 
+    # Use defaults from artifacts; no per-user settings persistence.
     q2_defaults_loaded = dict(q2_defaults)
     initial_calls = default_calls
 
+    # --- UI construction ---
     root = tk.Tk()
     root.title('Term Deposit Prediction')
     root.geometry('1100x900')
 
-    bg = '#f5f7fa'
-    card_bg = '#ffffff'
-    accent = '#0b6fa4'
+    bg = '#f5f7fa'       # app background
+    card_bg = '#ffffff'  # card-style panels
+    accent = '#0b6fa4'   # primary accent color
     root.configure(background=bg)
     style = ttk.Style()
     style.theme_use('clam')
@@ -165,6 +177,7 @@ def build_gui():
         style='Body.TLabel',
     ).grid(row=1, column=0, sticky='w', pady=(0, 10))
 
+    # Q1 call-count block
     calls_frame = ttk.LabelFrame(main_frame, text='Call-count model (Q1)', style='Section.TLabelframe')
     calls_frame.grid(row=2, column=0, sticky='ew', pady=(0, 12))
     calls_frame.columnconfigure(1, weight=1)
@@ -179,6 +192,7 @@ def build_gui():
     )
     calls_spin.grid(row=0, column=1, sticky='w', pady=4, padx=(8, 0))
 
+    # Q3 top-7 block
     features_frame = ttk.LabelFrame(main_frame, text='Q3 top-7 feature model', style='Section.TLabelframe')
     features_frame.grid(row=3, column=0, sticky='ew', pady=(0, 12))
     features_frame.columnconfigure(1, weight=1)
@@ -223,9 +237,11 @@ def build_gui():
             if hint:
                 ttk.Label(features_frame, text=hint, foreground='#555').grid(row=idx, column=2, sticky='w', padx=(8, 0))
             if feature == 'campaign':
+                # Keep campaign synced with calls spinbox
                 campaign_var = var
 
     def sync_campaign(*_args: object) -> None:
+        """Propagate Q1 calls into the campaign field."""
         if campaign_var is None or sync_state['active']:
             return
         try:
@@ -241,6 +257,7 @@ def build_gui():
             sync_state['active'] = False
 
     def sync_calls(*_args: object) -> None:
+        """Propagate campaign edits back to the calls spinbox."""
         if campaign_var is None or sync_state['active']:
             return
         raw = campaign_var.get().strip()
@@ -259,11 +276,13 @@ def build_gui():
             sync_state['active'] = False
 
     sync_state = {'active': False}
+    # Wire bidirectional sync so Q1 calls and campaign stay aligned
     calls_var.trace_add('write', sync_campaign)
     if campaign_var is not None:
         campaign_var.trace_add('write', sync_calls)
     sync_campaign()
 
+    # Results block (text summary + chart)
     result_frame = ttk.LabelFrame(main_frame, text='Results', style='Section.TLabelframe')
     result_frame.grid(row=5, column=0, sticky='ew', pady=(6, 0))
     result_container = ttk.Frame(result_frame)
@@ -286,6 +305,7 @@ def build_gui():
     chart_holder: Dict[str, object] = {'canvas': None}
 
     def predict():
+        """Run single prediction, update chart, and render textual summary."""
         try:
             call_count = int(calls_var.get())
             if call_count < 0:
@@ -300,6 +320,7 @@ def build_gui():
             if feature_types[name] == 'categorical':
                 feature_values[name] = widget.get()
             else:
+                # Numeric fields: allow blank to fall back to default
                 raw = widget.get().strip()
                 if raw == '':
                     raw = feature_defaults[name]
@@ -361,6 +382,7 @@ def build_gui():
         chart_holder['canvas'] = canvas
         root.update_idletasks()
 
+        # Text summary for the predictions and recommendation
         result_lines = [
             f'Call-count only:   P(yes)={call_prob:.3f} | thr {CALL_THRESHOLD:.2f} => {call_decision}',
             f'Top-features:      P(yes)={full_prob:.3f} | thr {FULL_THRESHOLD:.2f} => {full_decision}',
@@ -383,6 +405,7 @@ def build_gui():
     ttk.Button(btn_frame, text='Quit', command=root.destroy).grid(row=0, column=3, sticky='e')
 
     def download_template() -> None:
+        """Save a copy of the input template to user-chosen path."""
         try:
             template_path = locate_template_file()
         except FileNotFoundError as exc:
@@ -403,6 +426,7 @@ def build_gui():
             messagebox.showerror('Save error', f'Could not save template:\n{exc}')
 
     def batch_predict() -> None:
+        """Run batch predictions from a CSV file and write results."""
         src = filedialog.askopenfilename(
             title='Select input CSV',
             filetypes=[('CSV files', '*.csv'), ('All Files', '*.*')],
@@ -428,10 +452,12 @@ def build_gui():
         }
 
         def safe_get(row: pd.Series, name: str, default: object) -> object:
+            # Helper to pull a value or fall back to a default
             if name in row and not pd.isna(row[name]):
                 return row[name]
             return default
 
+        # Validation dictionaries for batch inputs
         allowed_categories: Dict[str, set] = {
             'job': {
                 'admin.', 'blue-collar', 'entrepreneur', 'housemaid', 'management',
@@ -466,7 +492,7 @@ def build_gui():
         def add_error(row_num: int, col_name: str, value: object, msg: str) -> None:
             error_cells.append(f'Row {row_num}, column {col_name}: {msg} (found: {value})')
 
-        # Validate all rows first
+        # Validate all rows first (categorical domain + numeric ranges)
         for idx, row in input_df.iterrows():
             display_row = idx + 2  # account for header row in CSV
             for cat_col, allowed_set in allowed_categories.items():

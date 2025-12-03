@@ -1,3 +1,5 @@
+"""Offline trainer to produce pre-trained joblib artifacts for the GUI."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -31,10 +33,12 @@ def build_metadata(df_subset: pd.DataFrame, features: List[str]) -> Tuple[Dict[s
     feature_options: Dict[str, list] = {}
     for col in features:
         if col in cat_cols:
+            # Categorical: use mode and enumerate allowed categories
             feature_defaults[col] = df_subset[col].mode(dropna=True)[0]
             feature_types[col] = 'categorical'
             feature_options[col] = sorted(df_subset[col].dropna().unique().tolist())
         else:
+            # Numeric: use median, no options list
             feature_defaults[col] = float(df_subset[col].median())
             feature_types[col] = 'numeric'
             feature_options[col] = []
@@ -42,6 +46,7 @@ def build_metadata(df_subset: pd.DataFrame, features: List[str]) -> Tuple[Dict[s
 
 
 def train_call_model(df: pd.DataFrame) -> Tuple[LogisticRegression, Dict[str, int]]:
+    """Train the Q1 call-count logistic regression and collect defaults."""
     target = (df['y'] == 'yes').astype(int)
     X = df[['campaign']]
     X_train, _, y_train, _ = train_test_split(
@@ -57,6 +62,7 @@ def train_call_model(df: pd.DataFrame) -> Tuple[LogisticRegression, Dict[str, in
 
 
 def train_top7_model(df: pd.DataFrame, top_features: List[str]) -> Tuple[Pipeline, Dict[str, object], Dict[str, str], Dict[str, list]]:
+    """Train the Q3 top-7 pipeline (OHE + scaler + logistic regression)."""
     y = (df['y'] == 'yes').astype(int)
     X_full = df.drop(columns=['y'])
     cat = X_full.select_dtypes(include=['object']).columns.tolist()
@@ -85,6 +91,7 @@ def train_top7_model(df: pd.DataFrame, top_features: List[str]) -> Tuple[Pipelin
 
 
 def train_q2_model(df: pd.DataFrame) -> Tuple[Pipeline, Dict[str, object], Dict[str, str], Dict[str, list], List[str]]:
+    """Train the full Q2 pipeline on all features."""
     y = (df['y'] == 'yes').astype(int)
     X_full = df.drop(columns=['y'])
     feature_list = list(X_full.columns)
@@ -115,11 +122,13 @@ def train_q2_model(df: pd.DataFrame) -> Tuple[Pipeline, Dict[str, object], Dict[
 
 
 def main() -> None:
+    # Candidate locations for the dataset
     data_paths = [
         Path('Data/bank-additional-full.csv'),
         Path('bank-additional-full.csv'),
         Path('ITEC3040-Final-Project/Data/bank-additional-full.csv'),
     ]
+    # Q3 top-7 leak-free features used by GUI
     top_features = [
         'euribor3m',
         'age',
@@ -132,10 +141,12 @@ def main() -> None:
 
     df = load_dataset(data_paths)
 
+    # Train each question-specific model and collect metadata/defaults
     call_model, call_meta = train_call_model(df)
     top7_model, top7_defaults, top7_types, top7_options = train_top7_model(df, top_features)
     q2_model, q2_defaults, q2_types, q2_options, q2_features = train_q2_model(df)
 
+    # Save Q1 artifact
     joblib.dump(
         {
             'model': call_model,
@@ -144,6 +155,7 @@ def main() -> None:
         'call_model.joblib',
     )
 
+    # Save Q3/top-7 artifact
     joblib.dump(
         {
             'model': top7_model,
@@ -155,6 +167,7 @@ def main() -> None:
         'top7_model.joblib',
     )
 
+    # Save Q2/full artifact
     joblib.dump(
         {
             'model': q2_model,
