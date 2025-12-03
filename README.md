@@ -4,15 +4,12 @@
 (python)/py -m pip install -r requirements.txt
 
 
-<<<<<<< HEAD
+
 ## To the run GUI paste the following and run in the terminal 
 (python)/py updated_GUI.py
 Please use the downloadable template to see how to make a csv for batch data checks
-=======
-# To the run GUI paste the following and run in the terminal 
-# (python)/py updated_GUI.py
-# Please use the download template to see how to make a csv for batch data checks
->>>>>>> 3b8777fee7d9a87be7c6e7c0677cc6fff415bdee
+
+
 
 
 This project uses the Bank Marketing dataset from a Portuguese bank’s direct phone campaigns (May 2008–Nov 2010). The goal is to predict whether a client will subscribe to a term deposit (y ∈ {yes, no}) based on client demographics, past contact history, and macroeconomic indicators. We use bank-additional-full.csv (N=41,188) for implementation, and evaluation will be done using a time-based split (train on earlier months, validate on later). The dataset is imbalanced, with only about 11.3% of clients subscribing (“yes”).
