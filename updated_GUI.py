@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import joblib
 import pandas as pd
